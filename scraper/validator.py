@@ -70,12 +70,29 @@ def is_valid_page(html: str | None, source: str) -> bool:
     if source == "kbo" and "onderneming" not in lower and "entreprise" not in lower:
         return False
     if source == "moniteur" and not any(
-        k in lower for k in ("moniteur", "ejustice", "justitie", "publication", "numac")
+        k in lower
+        for k in ("moniteur", "ejustice", "justitie", "publication", "numac", "annexe")
     ):
         return False
-    if source == "bnb" and not any(
-        k in lower for k in ("nbb", "bilan", "cbso", "consult", "banque nationale")
-    ):
+    if source == "bnb" and not _bnb_page_looks_valid(lower):
         return False
 
     return True
+
+
+def _bnb_page_looks_valid(lower: str) -> bool:
+    """BNB (consult.cbso.nbb.be) renvoie souvent une coquille Angular sans bilans dans le HTML."""
+    if any(
+        k in lower
+        for k in ("nbb", "bilan", "cbso", "consult", "banque nationale", "centrale des bilans")
+    ):
+        return True
+    # SPA Consult : <app-root> + scripts Angular — à stocker sur HDFS pour traçabilité
+    if "app-root" in lower and (
+        "<title>consult</title>" in lower
+        or "consult.cbso" in lower
+        or "cbso.nbb" in lower
+        or ("main." in lower and ".js" in lower)
+    ):
+        return True
+    return False

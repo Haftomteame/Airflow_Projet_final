@@ -2,10 +2,14 @@
 
 import json
 import logging
+import os
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 from airflow.models import Variable
 
+from airflow_runtime import airflow_heartbeat
 from common import (
     get_hdfs,
     get_mongo,
@@ -96,6 +100,10 @@ def _store_scrape_results(results: list[dict]) -> int:
     return stored
 
 
+def _env_bool(name: str, default: str = "true") -> bool:
+    return os.getenv(name, default).lower() in ("1", "true", "yes")
+
+
 def scrape_prepare_batch(**_context):
     """Prépare la liste BCE à scraper (partagée via Variable Airflow)."""
     seed_companies_from_csv([])
@@ -104,22 +112,76 @@ def scrape_prepare_batch(**_context):
     queued = repo.dequeue_scrape_batch(limit=0)
     db_stale = [c.bce_number for c in repo.find_stale_companies(days=14)]
     combined = list(dict.fromkeys(bce_list + queued + db_stale))
-    stale = repo.filter_fresh_companies(combined, days=14)
+    stale_days = int(os.getenv("SCRAPE_STALE_DAYS", "14"))
+    stale = repo.filter_fresh_companies(combined, days=stale_days)
+
+    if not stale and combined and _env_bool("SCRAPE_FALLBACK_IF_ALL_FRESH", "true"):
+        fallback_limit = int(os.getenv("SCRAPE_FALLBACK_LIMIT", "100") or "100")
+        stale = combined if fallback_limit <= 0 else combined[:fallback_limit]
+        logger.info(
+            "Toutes les entreprises sont fraîches (< %d j) — repli sur %d BCE",
+            stale_days,
+            len(stale),
+        )
+
     Variable.set(SCRAPE_STALE_VAR, json.dumps(stale))
-    logger.info("BCE à traiter (stale): %d", len(stale))
+    logger.info("BCE à traiter: %d", len(stale))
     if not stale:
-        logger.warning("Aucun BCE à scraper — les DAGs sources peuvent échouer volontairement")
+        logger.warning("Aucun BCE disponible (CSV/SQL/queue vides)")
     return len(stale)
 
 
-def _run_scrape_source(source: str, **_context):
+def _limit_bce_batch(bce_list: list[str], source: str) -> list[str]:
+    """Limite optionnelle par source (Moniteur paginé = très long)."""
+    env_key = {
+        "moniteur": "SCRAPE_MONITEUR_BCE_LIMIT",
+        "kbo": "SCRAPE_KBO_BCE_LIMIT",
+        "bnb": "SCRAPE_BNB_BCE_LIMIT",
+    }.get(source)
+    if not env_key:
+        return bce_list
+    limit = int(os.getenv(env_key, "0") or "0")
+    if limit > 0 and len(bce_list) > limit:
+        logger.info(
+            "Scraping %s limité à %d/%d BCE (%s)",
+            source,
+            limit,
+            len(bce_list),
+            env_key,
+        )
+        return bce_list[:limit]
+    return bce_list
+
+
+def _run_scrape_source(source: str, **context: Any):
     stale = json.loads(Variable.get(SCRAPE_STALE_VAR, "[]"))
     if not stale:
-        raise ValueError(
-            "Liste BCE vide. Exécutez d'abord dag_t_scrape_prepare (pipeline scraping)."
+        logger.warning(
+            "Scraping %s ignoré : liste BCE vide (lancer dag_t_scrape_prepare avant ce DAG)",
+            source,
         )
+        return {
+            "source": source,
+            "scraped": 0,
+            "stored": 0,
+            "invalid": 0,
+            "companies": 0,
+            "skipped": True,
+        }
+    stale = _limit_bce_batch(stale, source)
     scraper = get_scraper()
-    results = scraper.scrape_batch(stale, source=source)
+    heartbeat_every = float(os.getenv("SCRAPE_HEARTBEAT_SEC", "30"))
+    last_hb = time.monotonic()
+
+    def on_progress(_index: int, _total: int, _bce: str) -> None:
+        nonlocal last_hb
+        if time.monotonic() - last_hb >= heartbeat_every:
+            airflow_heartbeat(context)
+            last_hb = time.monotonic()
+
+    airflow_heartbeat(context)
+    results = scraper.scrape_batch(stale, source=source, on_progress=on_progress)
+    airflow_heartbeat(context)
     stored = _store_scrape_results(results)
     invalid = sum(1 for r in results if r.get("valid") is False)
     if stored == 0 and results:
@@ -155,13 +217,37 @@ def _run_scrape_source(source: str, **_context):
     }
 
 
-def scrape_kbo(**_context):
-    return _run_scrape_source("kbo")
+def scrape_kbo(**context: Any):
+    return _run_scrape_source("kbo", **context)
 
 
-def scrape_moniteur(**_context):
-    return _run_scrape_source("moniteur")
+def scrape_moniteur(**context: Any):
+    return _run_scrape_source("moniteur", **context)
 
 
-def scrape_bnb(**_context):
-    return _run_scrape_source("bnb")
+def scrape_bnb(**context: Any):
+    return _run_scrape_source("bnb", **context)
+
+
+def scrape_advance_batch_offset(**_context):
+    """
+    Avance le curseur KBO après un pipeline scraping réussi
+    (lot suivant = offset + taille du lot traité).
+    """
+    from batch_utils import advance_kbo_batch_offset, get_kbo_batch_offset
+
+    stale = json.loads(Variable.get(SCRAPE_STALE_VAR, "[]"))
+    if not stale:
+        logger.info(
+            "Curseur lot inchangé (offset=%d) : aucun BCE dans le lot",
+            get_kbo_batch_offset(),
+        )
+        return {"advanced": 0, "offset": get_kbo_batch_offset()}
+
+    new_offset = advance_kbo_batch_offset(len(stale))
+    logger.info(
+        "Lot de %d BCE terminé — prochain run à partir de l'offset %d",
+        len(stale),
+        new_offset,
+    )
+    return {"advanced": len(stale), "offset": new_offset}

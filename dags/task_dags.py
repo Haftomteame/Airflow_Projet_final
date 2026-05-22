@@ -36,7 +36,13 @@ from tasks.lifecycle_tasks import (
     lifecycle_trigger_rescrape,
 )
 from tasks.monitoring_tasks import collect_monitoring_snapshot
-from tasks.scrape_tasks import scrape_bnb, scrape_kbo, scrape_moniteur, scrape_prepare_batch
+from tasks.scrape_tasks import (
+    scrape_advance_batch_offset,
+    scrape_bnb,
+    scrape_kbo,
+    scrape_moniteur,
+    scrape_prepare_batch,
+)
 
 _TASK_SPECS = [
     # KBO
@@ -49,6 +55,12 @@ _TASK_SPECS = [
     ("dag_t_scrape_kbo", scrape_kbo, "Scraping: source KBO", ["scraping", "kbo"]),
     ("dag_t_scrape_moniteur", scrape_moniteur, "Scraping: source Moniteur", ["scraping", "moniteur"]),
     ("dag_t_scrape_bnb", scrape_bnb, "Scraping: source BNB", ["scraping", "bnb"]),
+    (
+        "dag_t_scrape_advance_batch",
+        scrape_advance_batch_offset,
+        "Scraping: avancer curseur lot KBO",
+        ["scraping", "batch"],
+    ),
     # Extraction
     ("dag_t_extract_list_files", extract_list_unparsed_files, "Extraction: lister fichiers HDFS non parsés", ["extraction"]),
     ("dag_t_extract_parse_kbo", extract_parse_kbo, "Extraction: parser HTML KBO", ["extraction", "kbo"]),
@@ -73,6 +85,9 @@ _TASK_SPECS = [
 ]
 
 _SCRAPE_TIMEOUT_HOURS = int(os.getenv("SCRAPE_TASK_TIMEOUT_HOURS", "2"))
+_SCRAPE_MONITEUR_TIMEOUT_HOURS = int(
+    os.getenv("SCRAPE_MONITEUR_TIMEOUT_HOURS", str(max(_SCRAPE_TIMEOUT_HOURS, 12)))
+)
 
 _TASK_EXTRA_KWARGS: dict[str, dict] = {
     "dag_t_kbo_import_data": {
@@ -86,7 +101,7 @@ _TASK_EXTRA_KWARGS: dict[str, dict] = {
         "execution_timeout": timedelta(hours=_SCRAPE_TIMEOUT_HOURS),
     },
     "dag_t_scrape_moniteur": {
-        "execution_timeout": timedelta(hours=_SCRAPE_TIMEOUT_HOURS),
+        "execution_timeout": timedelta(hours=_SCRAPE_MONITEUR_TIMEOUT_HOURS),
     },
     "dag_t_scrape_bnb": {
         "execution_timeout": timedelta(hours=_SCRAPE_TIMEOUT_HOURS),

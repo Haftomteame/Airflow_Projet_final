@@ -117,10 +117,10 @@ class AnalyticsEngine:
             return kbo
 
         with self.repo.session() as s:
-            companies = s.query(Company).filter(Company.nace_code.isnot(None)).all()
+            companies = s.query(Company).filter(Company.is_deleted == False).all()  # noqa: E712
         agg: dict[str, dict] = {}
         for c in companies:
-            code = c.nace_code or "unknown"
+            code = (c.nace_code or "").strip() or "Non renseigné"
             if code not in agg:
                 agg[code] = {"code_nace": code, "libelle": code, "total_entreprises": 0}
             agg[code]["total_entreprises"] += 1
@@ -192,15 +192,22 @@ class AnalyticsEngine:
             return kbo
 
         with self.repo.session() as s:
-            companies = s.query(Company).all()
+            companies = (
+                s.query(Company)
+                .filter(Company.is_deleted == False)  # noqa: E712
+                .all()
+            )
         agg: dict[str, dict] = {}
         for c in companies:
-            month = (c.created_at or datetime.utcnow()).strftime("%Y-%m")
+            created = c.created_at or datetime.utcnow()
+            if created.year < 2000:
+                continue
+            month = created.strftime("%Y-%m")
             if month not in agg:
                 agg[month] = {"mois": month, "nouvelles_entreprises": 0, "fermees_mois": 0}
             agg[month]["nouvelles_entreprises"] += 1
-            if c.status in ("closed", "radiated"):
+            if c.status in ("closed", "radiated", "inactive"):
                 agg[month]["fermees_mois"] += 1
-        data = list(agg.values())
+        data = sorted(agg.values(), key=lambda x: x["mois"])
         self.repo.bulk_insert_analytics(AnalyticsTemporal, data)
         return len(data)

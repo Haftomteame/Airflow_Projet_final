@@ -238,28 +238,29 @@ def truncate_kbo_tables(db_url: str | None = None) -> None:
 
 def _airflow_heartbeat(context: dict[str, Any] | None) -> None:
     """Évite le zombie kill pendant les COPY longs (Celery / state mismatch)."""
-    if not context:
+    try:
+        from airflow_runtime import airflow_heartbeat
+    except ImportError:
         return
-    ti = context.get("ti")
-    if ti is None:
-        return
-    for method in ("heartbeat", "emit_heartbeat"):
-        fn = getattr(ti, method, None)
-        if callable(fn):
-            try:
-                fn()
-                return
-            except Exception:
-                pass
+    airflow_heartbeat(context)
 
 
-def _collect_enterprise_numbers(filepath: Path, limit: int) -> set[str]:
+def _collect_enterprise_numbers(
+    filepath: Path,
+    limit: int,
+    offset: int = 0,
+) -> set[str]:
     numbers: set[str] = set()
+    offset = max(0, int(offset))
+    collected = 0
     with open(filepath, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
-            if limit > 0 and i >= limit:
+            if i < offset:
+                continue
+            if limit > 0 and collected >= limit:
                 break
+            collected += 1
             raw = (
                 row.get("EnterpriseNumber")
                 or row.get("enterprise_number")
@@ -340,6 +341,46 @@ def load_kbo_addresses_for_loaded_enterprises(
     return rows_loaded
 
 
+def load_kbo_activities_for_loaded_enterprises(
+    data_path: Path | None = None,
+    db_url: str | None = None,
+    *,
+    context: dict[str, Any] | None = None,
+) -> int:
+    """Charge activity.csv pour les entreprises déjà importées (si kbo_activity est vide)."""
+    data_path = data_path or get_kbo_data_path()
+    db_url = db_url or os.getenv("APP_DB_URL", "postgresql://airflow:airflow@postgres/belgian_companies")
+    filepath = data_path / "activity.csv"
+    if not filepath.exists():
+        logger.warning("activity.csv introuvable: %s", filepath)
+        return 0
+
+    entity_filter = _collect_entity_filter_from_db(db_url)
+    if not entity_filter:
+        logger.warning("Aucune entreprise KBO en base — import activity ignoré")
+        return 0
+
+    table, columns = KBO_FILES["activity.csv"]
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            rows_loaded = _load_csv_into_table(
+                cur,
+                filepath,
+                table,
+                columns,
+                limit=0,
+                entity_filter=entity_filter,
+                entity_key="entity_number",
+                context=context,
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    logger.info("Activités KBO rechargées: %d lignes", rows_loaded)
+    return rows_loaded
+
+
 def sync_postal_codes_to_companies(db_url: str | None = None) -> int:
     """Met à jour companies.postal_code depuis kbo_address (REGO)."""
     schema_dir = get_kbo_schema_dir()
@@ -355,6 +396,27 @@ def sync_postal_codes_to_companies(db_url: str | None = None) -> int:
             cur.execute(
                 "SELECT COUNT(*) FROM companies "
                 "WHERE postal_code IS NOT NULL AND TRIM(postal_code) <> ''"
+            )
+            return int(cur.fetchone()[0])
+    finally:
+        conn.close()
+
+
+def sync_nace_codes_to_companies(db_url: str | None = None) -> int:
+    """Met à jour companies.nace_code depuis kbo_activity (activité MAIN)."""
+    schema_dir = get_kbo_schema_dir()
+    sql_path = schema_dir / "05_sync_nace_codes.sql"
+    if not sql_path.exists():
+        logger.warning("Script absent: %s", sql_path)
+        return 0
+    db_url = db_url or os.getenv("APP_DB_URL", "postgresql://airflow:airflow@postgres/belgian_companies")
+    run_sql_file(sql_path, db_url)
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM companies "
+                "WHERE nace_code IS NOT NULL AND TRIM(nace_code) <> '' AND is_deleted = FALSE"
             )
             return int(cur.fetchone()[0])
     finally:
@@ -403,10 +465,20 @@ def _load_csv_into_table(
 
         if limit > 0 and filepath.name == "enterprise.csv":
             rows = []
+            try:
+                from db.batch_utils import get_kbo_batch_offset
+
+                import_offset = get_kbo_batch_offset()
+            except Exception:
+                import_offset = int(os.getenv("KBO_BCE_BATCH_OFFSET", "0") or "0")
+            collected = 0
             for i, row in enumerate(reader):
-                if i >= limit:
+                if i < import_offset:
+                    continue
+                if collected >= limit:
                     break
                 rows.append(row)
+                collected += 1
                 if time.monotonic() - last_hb >= heartbeat_every:
                     _airflow_heartbeat(context)
                     last_hb = time.monotonic()
@@ -442,15 +514,26 @@ def load_all_csv(
     data_path = data_path or get_kbo_data_path()
     db_url = db_url or os.getenv("APP_DB_URL", "postgresql://airflow:airflow@postgres/belgian_companies")
     limit = int(os.getenv("KBO_IMPORT_LIMIT", "0") or "0")
+    import_offset = 0
+    if limit > 0:
+        try:
+            from db.batch_utils import get_kbo_batch_offset
+
+            import_offset = get_kbo_batch_offset()
+        except Exception:
+            import_offset = int(os.getenv("KBO_BCE_BATCH_OFFSET", "0") or "0")
 
     enterprise_path = data_path / "enterprise.csv"
     entity_filter: set[str] | None = None
     if limit > 0 and enterprise_path.exists():
-        entity_filter = _collect_enterprise_numbers(enterprise_path, limit)
+        entity_filter = _collect_enterprise_numbers(
+            enterprise_path, limit, offset=import_offset
+        )
         logger.info(
-            "Mode import limité: %d entreprises (KBO_IMPORT_LIMIT=%d)",
+            "Mode import limité: %d entreprises (KBO_IMPORT_LIMIT=%d, offset=%d)",
             len(entity_filter),
             limit,
+            import_offset,
         )
 
     counts: dict[str, int] = {}
@@ -476,7 +559,9 @@ def load_all_csv(
                     continue
 
                 if limit > 0 and not entity_filter and filename == "enterprise.csv":
-                    entity_filter = _collect_enterprise_numbers(filepath, limit)
+                    entity_filter = _collect_enterprise_numbers(
+                        filepath, limit, offset=import_offset
+                    )
 
                 use_filter = limit > 0 and entity_filter and entity_key
                 if limit > 0 and filename not in (

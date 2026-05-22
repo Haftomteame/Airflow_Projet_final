@@ -5,6 +5,7 @@ Dashboard Streamlit — supervision temps réel de la plateforme entreprises bel
 import json
 import os
 import re
+import time
 from datetime import datetime
 from urllib.parse import urlencode
 
@@ -40,7 +41,7 @@ MONITEUR_BASE_URL = os.getenv(
 )
 BNB_BASE_URL = os.getenv("BNB_BASE_URL", "https://consult.cbso.nbb.be/")
 
-# Palette inspirée des couleurs belges + UI moderne
+# Palette sombre (couleurs belges + UI moderne)
 COLORS = {
     "bg": "#0c1222",
     "card": "#151d33",
@@ -48,12 +49,22 @@ COLORS = {
     "border": "#2a3655",
     "text": "#f8fafc",
     "muted": "#b8c8de",
+    "heading": "#ffffff",
     "gold": "#f5c518",
     "red": "#e63946",
     "green": "#22c55e",
     "blue": "#3b82f6",
     "cyan": "#06b6d4",
     "purple": "#a78bfa",
+    "gradient_mid": "#111827",
+    "gradient_end": "#0f172a",
+    "sidebar_start": "#0a0f1c",
+    "tab_active": "#1e3a5f",
+    "grid": "rgba(42,54,85,0.5)",
+    "code_bg": "rgba(6, 182, 212, 0.12)",
+    "btn_primary": "#2563eb",
+    "btn_link_bg": "#1e3a5f",
+    "heatmap_start": "#1e3a5f",
 }
 CHART_PALETTE = ["#3b82f6", "#22c55e", "#f5c518", "#e63946", "#a78bfa", "#06b6d4", "#f97316"]
 
@@ -144,6 +155,29 @@ def link_column_config(*columns: str) -> dict:
     }
 
 
+def format_snapshot_diff(snapshot: dict | str) -> str:
+    """Affiche un résumé lisible d'un snapshot d'historique."""
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except json.JSONDecodeError:
+            return snapshot
+    if not isinstance(snapshot, dict):
+        return str(snapshot)
+    parts = []
+    for key, label in (
+        ("status", "Statut"),
+        ("name", "Nom"),
+        ("postal_code", "CP"),
+        ("nace_code", "NACE"),
+        ("is_archived", "Archivée"),
+    ):
+        val = snapshot.get(key)
+        if val is not None and val != "":
+            parts.append(f"{label}: {val}")
+    return " · ".join(parts) if parts else json.dumps(snapshot, ensure_ascii=False)
+
+
 def show_linked_dataframe(df: pd.DataFrame, link_cols: tuple[str, ...], column_order: list[str] | None = None) -> None:
     if df.empty:
         return
@@ -176,7 +210,7 @@ def inject_styles() -> None:
         }}
 
         .stApp {{
-            background: linear-gradient(165deg, {COLORS["bg"]} 0%, #111827 45%, #0f172a 100%);
+            background: linear-gradient(165deg, {COLORS["bg"]} 0%, {COLORS["gradient_mid"]} 45%, {COLORS["gradient_end"]} 100%);
             font-family: 'DM Sans', sans-serif;
             color: var(--text-primary) !important;
         }}
@@ -201,7 +235,7 @@ def inject_styles() -> None:
         .main [data-testid="stMarkdownContainer"] h1,
         .main [data-testid="stMarkdownContainer"] h2,
         .main [data-testid="stMarkdownContainer"] h3 {{
-            color: #ffffff !important;
+            color: {COLORS["heading"]} !important;
             font-family: 'DM Sans', sans-serif !important;
             font-weight: 700 !important;
         }}
@@ -264,7 +298,7 @@ def inject_styles() -> None:
             text-overflow: clip !important;
         }}
         .stTabs [aria-selected="true"] {{
-            background: linear-gradient(180deg, #1e3a5f 0%, var(--bg-card) 100%) !important;
+            background: linear-gradient(180deg, {COLORS["tab_active"]} 0%, var(--bg-card) 100%) !important;
             color: var(--accent) !important;
             border-color: var(--border) !important;
         }}
@@ -303,7 +337,7 @@ def inject_styles() -> None:
             word-break: break-word;
         }}
         .kpi-card .kpi-value {{
-            color: #ffffff;
+            color: {COLORS["heading"]};
             font-size: 1.75rem;
             font-weight: 700;
             line-height: 1.2;
@@ -331,7 +365,7 @@ def inject_styles() -> None:
             word-break: break-word;
         }}
         [data-testid="stMetricValue"] {{
-            color: #ffffff !important;
+            color: {COLORS["heading"]} !important;
             font-size: 1.75rem !important;
             font-weight: 700 !important;
         }}
@@ -378,7 +412,7 @@ def inject_styles() -> None:
 
         /* --- Sidebar --- */
         [data-testid="stSidebar"] {{
-            background: linear-gradient(180deg, #0a0f1c 0%, var(--bg-card) 100%);
+            background: linear-gradient(180deg, {COLORS["sidebar_start"]} 0%, var(--bg-card) 100%);
             border-right: 1px solid var(--border);
         }}
         [data-testid="stSidebar"] h1,
@@ -400,22 +434,22 @@ def inject_styles() -> None:
         }}
         [data-testid="stSidebar"] code {{
             color: {COLORS["cyan"]} !important;
-            background: rgba(6, 182, 212, 0.12) !important;
+            background: {COLORS["code_bg"]} !important;
             padding: 0.1rem 0.35rem;
             border-radius: 4px;
         }}
 
         /* Boutons sidebar */
         [data-testid="stSidebar"] .stButton > button {{
-            background: #2563eb !important;
+            background: {COLORS["btn_primary"]} !important;
             color: #ffffff !important;
             border: none !important;
             font-weight: 600;
         }}
         [data-testid="stSidebar"] .stLinkButton a {{
-            background: #1e3a5f !important;
-            color: #ffffff !important;
-            border: 1px solid #3b82f6 !important;
+            background: {COLORS["btn_link_bg"]} !important;
+            color: {COLORS["text"]} !important;
+            border: 1px solid {COLORS["blue"]} !important;
             font-weight: 600;
             white-space: nowrap !important;
         }}
@@ -442,8 +476,8 @@ def style_figure(fig: go.Figure) -> go.Figure:
         margin=dict(l=12, r=12, t=36, b=12),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        xaxis=dict(gridcolor="rgba(42,54,85,0.5)", zeroline=False),
-        yaxis=dict(gridcolor="rgba(42,54,85,0.5)", zeroline=False),
+        xaxis=dict(gridcolor=COLORS["grid"], zeroline=False),
+        yaxis=dict(gridcolor=COLORS["grid"], zeroline=False),
         colorway=CHART_PALETTE,
     )
     fig.update_traces(
@@ -516,6 +550,18 @@ def query_df(sql: str, params: dict | list | tuple | None = None) -> pd.DataFram
         return pd.read_sql(sql, conn, params=params)
 
 
+def timed_query_df(
+    sql: str, params: dict | list | tuple | None = None
+) -> tuple[pd.DataFrame, float, str | None]:
+    """Exécute un SELECT et retourne (dataframe, durée_ms, message_erreur)."""
+    start = time.perf_counter()
+    try:
+        df = query_df(sql, params)
+        return df, (time.perf_counter() - start) * 1000, None
+    except Exception as exc:
+        return pd.DataFrame(), (time.perf_counter() - start) * 1000, str(exc)
+
+
 def execute_sql(sql: str, params: list | tuple | None = None) -> None:
     with psycopg2.connect(DB_URL) as conn:
         with conn.cursor() as cur:
@@ -538,6 +584,352 @@ def load_postal_analytics() -> pd.DataFrame:
         ORDER BY total DESC, code_postal
         """
     )
+
+
+NACE_ANALYTICS_SQL = """
+WITH company_nace AS (
+    SELECT DISTINCT ON (c.id)
+        c.id,
+        COALESCE(NULLIF(TRIM(act.nace_code), ''), NULLIF(TRIM(c.nace_code), '')) AS code_nace
+    FROM companies c
+    LEFT JOIN kbo_activity act
+        ON REPLACE(act.entity_number, '.', '') = c.bce_number
+       AND UPPER(TRIM(act.classification)) = 'MAIN'
+    WHERE c.is_deleted = FALSE
+    ORDER BY
+        c.id,
+        CASE act.activity_group WHEN '006' THEN 0 WHEN '001' THEN 1 ELSE 2 END,
+        act.nace_version DESC NULLS LAST,
+        act.nace_code
+)
+SELECT
+    COALESCE(cn.code_nace, 'Non renseigné') AS code_nace,
+    COALESCE(
+        (
+            SELECT k.description
+            FROM kbo_code k
+            WHERE k.code = cn.code_nace
+              AND k.language = 'FR'
+              AND k.category LIKE 'Nace%%'
+            ORDER BY k.category DESC
+            LIMIT 1
+        ),
+        cn.code_nace,
+        'Non renseigné'
+    ) AS libelle,
+    COUNT(*) AS total_entreprises
+FROM company_nace cn
+GROUP BY 1, 2
+ORDER BY total_entreprises DESC, code_nace
+"""
+
+TEMPORAL_ANALYTICS_SQL = """
+WITH parsed AS (
+    SELECT
+        e.status,
+        CASE
+            WHEN NULLIF(TRIM(e.start_date), '') ~ '^\\d{2}-\\d{2}-\\d{4}$'
+                THEN TO_DATE(NULLIF(TRIM(e.start_date), ''), 'DD-MM-YYYY')
+            WHEN NULLIF(TRIM(e.start_date), '') ~ '^\\d{4}-\\d{2}-\\d{2}$'
+                THEN TO_DATE(NULLIF(TRIM(e.start_date), ''), 'YYYY-MM-DD')
+            ELSE NULL
+        END AS kbo_start
+    FROM kbo_enterprise e
+    INNER JOIN companies c
+        ON c.bce_number = REPLACE(e.enterprise_number, '.', '')
+       AND c.is_deleted = FALSE
+)
+SELECT
+    TO_CHAR(kbo_start, 'YYYY-MM') AS mois,
+    COUNT(*) AS nouvelles_entreprises,
+    COUNT(*) FILTER (WHERE status IN ('AF', 'ST')) AS fermees_mois
+FROM parsed
+WHERE kbo_start IS NOT NULL
+  AND kbo_start >= DATE '1900-01-01'
+  AND kbo_start <= CURRENT_DATE + INTERVAL '1 year'
+GROUP BY TO_CHAR(kbo_start, 'YYYY-MM')
+ORDER BY 1
+"""
+
+
+# Requêtes SELECT représentatives du dashboard (benchmark performance système)
+PERFORMANCE_BENCHMARKS: list[dict] = [
+    {
+        "id": "ping",
+        "category": "Système",
+        "label": "Connexion PostgreSQL",
+        "sql": "SELECT 1 AS ok",
+    },
+    {
+        "id": "overview_snap",
+        "category": "Aperçu",
+        "label": "Dernier snapshot monitoring",
+        "sql": "SELECT * FROM monitoring_snapshots ORDER BY timestamp DESC LIMIT 1",
+    },
+    {
+        "id": "overview_stats",
+        "category": "Aperçu",
+        "label": "Compteurs entreprises (traitées / attente)",
+        "sql": """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE last_scraped IS NOT NULL) AS traitees,
+                COUNT(*) FILTER (WHERE last_scraped IS NULL) AS en_attente,
+                COUNT(*) FILTER (WHERE is_archived) AS archivees
+            FROM companies WHERE is_deleted = FALSE
+        """,
+    },
+    {
+        "id": "overview_errors_24h",
+        "category": "Aperçu",
+        "label": "Erreurs scraping (24 h)",
+        "sql": "SELECT COUNT(*) AS cnt FROM scrape_errors WHERE created_at >= NOW() - INTERVAL '24 hours'",
+    },
+    {
+        "id": "overview_queue",
+        "category": "Aperçu",
+        "label": "File scrape en attente",
+        "sql": "SELECT COUNT(*) AS cnt FROM scrape_queue WHERE processed = FALSE",
+    },
+    {
+        "id": "overview_hdfs",
+        "category": "Aperçu",
+        "label": "Métadonnées HDFS succès",
+        "sql": "SELECT COUNT(*) AS cnt FROM scrape_metadata WHERE status = 'success'",
+    },
+    {
+        "id": "overview_discovery",
+        "category": "Aperçu",
+        "label": "File découverte",
+        "sql": """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE processed) AS traitees,
+                COUNT(*) FILTER (WHERE NOT processed) AS en_attente
+            FROM discovery_queue
+        """,
+    },
+    {
+        "id": "overview_timeline",
+        "category": "Aperçu",
+        "label": "Évolution scrapes (14 jours)",
+        "sql": """
+            SELECT DATE(scraped_at) AS jour, COUNT(*) AS nb
+            FROM scrape_metadata
+            WHERE scraped_at >= NOW() - INTERVAL '14 days'
+            GROUP BY DATE(scraped_at) ORDER BY jour
+        """,
+    },
+    {
+        "id": "overview_status_dist",
+        "category": "Aperçu",
+        "label": "Répartition statuts entreprises",
+        "sql": """
+            SELECT COALESCE(status, 'unknown') AS status, COUNT(*) AS nb
+            FROM companies WHERE is_deleted = FALSE AND is_archived = FALSE
+            GROUP BY status
+        """,
+    },
+    {
+        "id": "overview_source_health",
+        "category": "Aperçu",
+        "label": "Santé par source (scrape_metadata)",
+        "sql": """
+            SELECT source,
+                   COUNT(*) AS total,
+                   COUNT(*) FILTER (WHERE status = 'success' AND http_code = 200) AS ok
+            FROM scrape_metadata GROUP BY source
+        """,
+    },
+    {
+        "id": "overview_monitoring_hist",
+        "category": "Aperçu",
+        "label": "Historique snapshots (48 h)",
+        "sql": """
+            SELECT timestamp, nb_traites, nb_attente, nb_en_cours, nb_decouvertes,
+                   nb_erreurs_scraping, nb_erreurs_parsing
+            FROM monitoring_snapshots
+            ORDER BY timestamp DESC
+            LIMIT 48
+        """,
+    },
+    {
+        "id": "analytics_cp_stats",
+        "category": "Analytics",
+        "label": "Couverture codes postaux / NACE",
+        "sql": """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (
+                    WHERE postal_code IS NOT NULL AND TRIM(postal_code) <> ''
+                ) AS avec_cp,
+                COUNT(*) FILTER (
+                    WHERE nace_code IS NOT NULL AND TRIM(nace_code) <> ''
+                ) AS avec_nace
+            FROM companies WHERE is_deleted = FALSE
+        """,
+    },
+    {
+        "id": "analytics_postal",
+        "category": "Analytics",
+        "label": "Agrégation par code postal",
+        "sql": """
+            SELECT
+                COALESCE(NULLIF(TRIM(postal_code), ''), 'non renseigné') AS code_postal,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status = 'active') AS actives,
+                COUNT(*) FILTER (WHERE status IN ('closed', 'radiated', 'inactive')) AS fermees
+            FROM companies
+            WHERE is_deleted = FALSE
+            GROUP BY COALESCE(NULLIF(TRIM(postal_code), ''), 'non renseigné')
+            ORDER BY total DESC, code_postal
+        """,
+    },
+    {
+        "id": "analytics_nace",
+        "category": "Analytics",
+        "label": "Agrégation secteurs NACE (KBO)",
+        "sql": NACE_ANALYTICS_SQL,
+    },
+    {
+        "id": "analytics_temporal",
+        "category": "Analytics",
+        "label": "Évolution temporelle (KBO)",
+        "sql": TEMPORAL_ANALYTICS_SQL,
+    },
+    {
+        "id": "analytics_ratio",
+        "category": "Analytics",
+        "label": "Ratio ouvertes / fermées",
+        "sql": "SELECT date, taux_ouvertes, taux_fermees FROM analytics_open_closed_ratio ORDER BY computed_at DESC LIMIT 5",
+    },
+    {
+        "id": "analytics_financial",
+        "category": "Analytics",
+        "label": "Classement financier (top 25)",
+        "sql": """
+            SELECT r.rang, r.bce_number, c.name, r.total_actif, r.computed_at
+            FROM analytics_financial_ranking r
+            LEFT JOIN companies c ON c.id = r.company_id
+            ORDER BY r.rang ASC NULLS LAST
+            LIMIT 25
+        """,
+    },
+    {
+        "id": "companies_list",
+        "category": "Entreprises",
+        "label": "Liste entreprises (200 dernières)",
+        "sql": """
+            SELECT c.bce_number, c.name, c.status, c.source, c.postal_code,
+                   c.last_scraped, c.is_archived
+            FROM companies c
+            WHERE c.is_deleted = FALSE
+            ORDER BY c.last_scraped DESC NULLS LAST, c.bce_number
+            LIMIT 200
+        """,
+    },
+    {
+        "id": "discovery_stats",
+        "category": "Découverte",
+        "label": "Statistiques découverte",
+        "sql": """
+            SELECT
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE processed) AS traitees,
+                COUNT(*) FILTER (WHERE NOT processed) AS en_attente
+            FROM discovery_queue
+        """,
+    },
+    {
+        "id": "discovery_recent",
+        "category": "Découverte",
+        "label": "Découvertes récentes (50)",
+        "sql": """
+            SELECT d.discovered_at, d.discovered_bce, d.reason, d.processed,
+                   c.name AS company_name
+            FROM discovery_queue d
+            LEFT JOIN companies c ON c.bce_number = d.discovered_bce
+            ORDER BY d.discovered_at DESC
+            LIMIT 50
+        """,
+    },
+    {
+        "id": "metadata_recent",
+        "category": "Métadonnées",
+        "label": "Derniers scrapes (100)",
+        "sql": """
+            SELECT m.scraped_at, c.bce_number, m.source, m.http_code, m.parsed,
+                   m.status, m.hdfs_path
+            FROM scrape_metadata m
+            LEFT JOIN companies c ON c.id = m.company_id
+            ORDER BY m.scraped_at DESC
+            LIMIT 100
+        """,
+    },
+    {
+        "id": "history_recent",
+        "category": "Historique",
+        "label": "Modifications récentes (50)",
+        "sql": """
+            SELECT h.changed_at, c.bce_number, c.name, h.snapshot
+            FROM company_history h
+            JOIN companies c ON c.id = h.company_id
+            ORDER BY h.changed_at DESC
+            LIMIT 50
+        """,
+    },
+    {
+        "id": "errors_recent",
+        "category": "Erreurs",
+        "label": "Erreurs récentes (100)",
+        "sql": """
+            SELECT created_at, error_type, source, bce_number, LEFT(message, 200) AS message
+            FROM scrape_errors
+            ORDER BY created_at DESC
+            LIMIT 100
+        """,
+    },
+    {
+        "id": "pg_table_stats",
+        "category": "Système",
+        "label": "Volumes tables PostgreSQL",
+        "sql": """
+            SELECT relname AS table_name, n_live_tup AS lignes_estimees
+            FROM pg_stat_user_tables
+            WHERE schemaname = 'public'
+            ORDER BY n_live_tup DESC
+        """,
+    },
+]
+
+
+def _perf_status(ms: float, ok: bool) -> str:
+    if not ok:
+        return "erreur"
+    if ms < 100:
+        return "rapide"
+    if ms < 500:
+        return "moyen"
+    return "lent"
+
+
+def run_performance_benchmarks() -> pd.DataFrame:
+    """Exécute toutes les requêtes SELECT du benchmark et retourne un rapport."""
+    rows = []
+    for bench in PERFORMANCE_BENCHMARKS:
+        df, ms, err = timed_query_df(bench["sql"])
+        rows.append(
+            {
+                "id": bench["id"],
+                "category": bench["category"],
+                "requête": bench["label"],
+                "durée_ms": round(ms, 2),
+                "lignes": len(df),
+                "statut": _perf_status(ms, err is None),
+                "erreur": err or "",
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def sync_postal_codes_from_kbo() -> int:
@@ -579,6 +971,84 @@ def sync_postal_codes_from_kbo() -> int:
         "WHERE postal_code IS NOT NULL AND TRIM(postal_code) <> '' AND is_deleted = FALSE"
     )
     return int(stats["n"].iloc[0]) if not stats.empty else 0
+
+
+def sync_nace_codes_from_kbo() -> int:
+    """Charge activity.csv si besoin, puis copie le NACE principal KBO."""
+    with psycopg2.connect(DB_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM kbo_activity")
+            act_rows = int(cur.fetchone()[0])
+
+    if act_rows == 0:
+        try:
+            from db.kbo_loader import load_kbo_activities_for_loaded_enterprises
+
+            loaded = load_kbo_activities_for_loaded_enterprises(db_url=DB_URL)
+            if loaded == 0:
+                st.warning(
+                    "Aucune activité KBO chargée. Vérifiez `activity.csv` dans KboOpenData "
+                    "ou relancez `dag_t_kbo_import_data`."
+                )
+                return 0
+        except Exception as exc:
+            st.warning(f"Import activity.csv impossible : {exc}")
+            return 0
+
+    try:
+        from db.kbo_loader import sync_nace_codes_to_companies
+
+        return sync_nace_codes_to_companies(DB_URL)
+    except Exception as exc:
+        execute_sql(
+            """
+            UPDATE companies c
+            SET nace_code = sub.nace_code
+            FROM (
+                SELECT DISTINCT ON (REPLACE(act.entity_number, '.', ''))
+                    REPLACE(act.entity_number, '.', '') AS bce_number,
+                    NULLIF(TRIM(act.nace_code), '') AS nace_code
+                FROM kbo_activity act
+                WHERE UPPER(TRIM(act.classification)) = 'MAIN'
+                  AND NULLIF(TRIM(act.nace_code), '') IS NOT NULL
+                ORDER BY
+                    REPLACE(act.entity_number, '.', ''),
+                    CASE act.activity_group WHEN '006' THEN 0 WHEN '001' THEN 1 ELSE 2 END,
+                    act.nace_version DESC NULLS LAST,
+                    act.nace_code
+            ) sub
+            WHERE c.bce_number = sub.bce_number
+              AND (c.nace_code IS NULL OR TRIM(c.nace_code) = '')
+            """
+        )
+        st.warning(f"Sync NACE via SQL direct : {exc}")
+
+    stats = query_df(
+        "SELECT COUNT(*) AS n FROM companies "
+        "WHERE nace_code IS NOT NULL AND TRIM(nace_code) <> '' AND is_deleted = FALSE"
+    )
+    return int(stats["n"].iloc[0]) if not stats.empty else 0
+
+
+@st.cache_data(ttl=REFRESH_SECONDS)
+def load_nace_analytics() -> pd.DataFrame:
+    return query_df(NACE_ANALYTICS_SQL)
+
+
+@st.cache_data(ttl=REFRESH_SECONDS)
+def load_temporal_analytics() -> pd.DataFrame:
+    df = query_df(TEMPORAL_ANALYTICS_SQL)
+    if df.empty:
+        return df
+    df["mois_dt"] = pd.to_datetime(df["mois"] + "-01", errors="coerce")
+    df = df.dropna(subset=["mois_dt"]).sort_values("mois_dt")
+    if df.empty:
+        return df
+    min_dt, max_dt = df["mois_dt"].min(), df["mois_dt"].max()
+    span_years = max(1, (max_dt - min_dt).days // 365)
+    window_years = 30 if span_years > 30 else span_years
+    cutoff = max_dt - pd.DateOffset(years=window_years)
+    return df[df["mois_dt"] >= cutoff].copy()
 
 
 @st.cache_data(ttl=REFRESH_SECONDS)
@@ -644,12 +1114,33 @@ def render_overview(data: dict) -> None:
 
     render_kpi_row(nb_traites, nb_attente, nb_queue, nb_hdfs, nb_en_cours, nb_erreurs)
 
+    inactive_df = query_df(
+        """
+        SELECT COUNT(*) AS cnt FROM companies
+        WHERE is_deleted = FALSE AND is_archived = FALSE
+          AND status IN ('inactive', 'closed', 'radiated')
+        """
+    )
+    nb_inactives = int(inactive_df["cnt"].iloc[0]) if not inactive_df.empty else 0
+
     total_co = nb_traites + nb_attente
     taux_traitement = (nb_traites / total_co * 100) if total_co else 0
     st.caption(
-        f"Archivées : {nb_archivees:,} · Découvertes : {nb_decouvertes:,} · "
-        f"Taux traitement : {taux_traitement:.1f} %"
+        f"Archivées : {nb_archivees:,} · Inactives/fermées : {nb_inactives:,} · "
+        f"Découvertes : {nb_decouvertes:,} · Taux traitement : {taux_traitement:.1f} %"
     )
+
+    if not snap.empty:
+        snap_row = snap.iloc[0]
+        err_cols = st.columns(4)
+        err_labels = [
+            ("nb_erreurs_scraping", "Scraping"),
+            ("nb_erreurs_parsing", "Parsing"),
+            ("nb_erreurs_validation", "Validation"),
+            ("nb_echecs_proxy", "Proxy"),
+        ]
+        for col, (field, label) in zip(err_cols, err_labels):
+            col.metric(f"Erreurs {label} (24h)", int(snap_row.get(field, 0) or 0))
 
     col_l, col_r = st.columns(2)
     with col_l:
@@ -719,6 +1210,36 @@ def render_overview(data: dict) -> None:
     with st.container(border=True):
         render_source_health(source_df)
 
+    monitoring_hist = query_df(
+        """
+        SELECT timestamp, nb_traites, nb_attente, nb_en_cours, nb_decouvertes,
+               nb_erreurs_scraping, nb_erreurs_parsing
+        FROM monitoring_snapshots
+        ORDER BY timestamp DESC
+        LIMIT 48
+        """
+    )
+    if not monitoring_hist.empty and len(monitoring_hist) > 1:
+        with st.container(border=True):
+            st.subheader("📉 Évolution plateforme (snapshots horaires)")
+            hist = monitoring_hist.sort_values("timestamp")
+            fig = go.Figure()
+            for col, label, color in (
+                ("nb_traites", "Traitées", COLORS["green"]),
+                ("nb_attente", "En attente", COLORS["gold"]),
+                ("nb_en_cours", "Scrapes du jour", COLORS["blue"]),
+            ):
+                fig.add_trace(
+                    go.Scatter(
+                        x=hist["timestamp"],
+                        y=hist[col],
+                        name=label,
+                        mode="lines+markers",
+                        line=dict(color=color, width=2),
+                    )
+                )
+            st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+
 
 def render_companies() -> None:
     with st.container(border=True):
@@ -778,6 +1299,100 @@ def render_companies() -> None:
             ],
         )
 
+        st.markdown("**Fiche entreprise détaillée**")
+        bce_options = companies["bce_number"].astype(str).tolist()
+        selected_bce = st.selectbox("Sélectionner un BCE", bce_options, key="company_detail_bce")
+        if selected_bce:
+            render_company_detail(selected_bce)
+
+
+def render_company_detail(bce_number: str) -> None:
+    company = query_df(
+        """
+        SELECT bce_number, name, address, postal_code, status, legal_form,
+               nace_code, source, last_scraped, is_archived, created_at
+        FROM companies WHERE bce_number = %s
+        """,
+        (bce_number,),
+    )
+    if company.empty:
+        st.warning("Entreprise introuvable.")
+        return
+    row = company.iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Statut", row.get("status") or "—")
+    c2.metric("Source", row.get("source") or "—")
+    c3.metric("NACE", row.get("nace_code") or "—")
+    c4.metric("Archivée", "Oui" if row.get("is_archived") else "Non")
+    st.write(f"**{row.get('name') or '—'}** — {row.get('address') or ''} ({row.get('postal_code') or ''})")
+
+    company_id_df = query_df("SELECT id FROM companies WHERE bce_number = %s", (bce_number,))
+    if company_id_df.empty:
+        return
+    company_id = int(company_id_df["id"].iloc[0])
+
+    col_l, col_r = st.columns(2)
+    with col_l:
+        directors = query_df(
+            "SELECT name, role, start_date FROM company_directors WHERE company_id = %s ORDER BY name",
+            (company_id,),
+        )
+        st.markdown("**Administrateurs / dirigeants**")
+        if directors.empty:
+            st.caption("Aucune donnée extraite.")
+        else:
+            st.dataframe(directors, hide_index=True, use_container_width=True)
+
+        financials = query_df(
+            """
+            SELECT fiscal_year, total_assets, equity, turnover, employees
+            FROM company_financials WHERE company_id = %s
+            ORDER BY fiscal_year DESC NULLS LAST
+            """,
+            (company_id,),
+        )
+        st.markdown("**Données financières (BNB)**")
+        if financials.empty:
+            st.caption("Aucune donnée financière extraite.")
+        else:
+            st.dataframe(financials, hide_index=True, use_container_width=True)
+
+    with col_r:
+        pubs = query_df(
+            """
+            SELECT publication_date, title, url
+            FROM moniteur_publications WHERE company_id = %s
+            ORDER BY publication_date DESC NULLS LAST
+            LIMIT 15
+            """,
+            (company_id,),
+        )
+        st.markdown("**Publications Moniteur**")
+        if pubs.empty:
+            st.caption("Aucune publication extraite.")
+        else:
+            st.dataframe(pubs, hide_index=True, use_container_width=True)
+
+        hist = query_df(
+            """
+            SELECT changed_at, snapshot
+            FROM company_history WHERE company_id = %s
+            ORDER BY changed_at DESC LIMIT 8
+            """,
+            (company_id,),
+        )
+        st.markdown("**Historique des changements**")
+        if hist.empty:
+            st.caption("Aucun changement enregistré.")
+        else:
+            hist_display = hist.copy()
+            hist_display["résumé"] = hist_display["snapshot"].apply(format_snapshot_diff)
+            st.dataframe(
+                hist_display[["changed_at", "résumé"]],
+                hide_index=True,
+                use_container_width=True,
+            )
+
 
 def render_analytics() -> None:
     with st.container(border=True):
@@ -789,36 +1404,44 @@ def render_analytics() -> None:
                 COUNT(*) AS total,
                 COUNT(*) FILTER (
                     WHERE postal_code IS NOT NULL AND TRIM(postal_code) <> ''
-                ) AS avec_cp
+                ) AS avec_cp,
+                COUNT(*) FILTER (
+                    WHERE nace_code IS NOT NULL AND TRIM(nace_code) <> ''
+                ) AS avec_nace
             FROM companies WHERE is_deleted = FALSE
             """
         )
         total_co = int(cp_stats["total"].iloc[0]) if not cp_stats.empty else 0
         avec_cp = int(cp_stats["avec_cp"].iloc[0]) if not cp_stats.empty else 0
+        avec_nace = int(cp_stats["avec_nace"].iloc[0]) if not cp_stats.empty else 0
 
-        c_sync, _ = st.columns([1, 3])
-        with c_sync:
-            if st.button("🔄 Synchroniser codes postaux (KBO)", use_container_width=True):
+        c_cp, c_nace, _ = st.columns([1, 1, 2])
+        with c_cp:
+            if st.button("🔄 Sync codes postaux (KBO)", use_container_width=True):
                 with st.spinner("Synchronisation…"):
                     n = sync_postal_codes_from_kbo()
                     st.cache_data.clear()
                 st.success(f"{n:,} entreprises avec code postal.")
                 st.rerun()
+        with c_nace:
+            if st.button("🔄 Sync secteurs NACE (KBO)", use_container_width=True):
+                with st.spinner("Synchronisation NACE…"):
+                    n = sync_nace_codes_from_kbo()
+                    st.cache_data.clear()
+                st.success(f"{n:,} entreprises avec code NACE.")
+                st.rerun()
         st.caption(
-            f"Codes postaux renseignés : **{avec_cp:,}** / **{total_co:,}** entreprises "
-            "(source : KBO Open Data `address.csv` + fiches scrapées)."
+            f"Codes postaux : **{avec_cp:,}** / **{total_co:,}** · "
+            f"Secteurs NACE : **{avec_nace:,}** / **{total_co:,}** "
+            "(source : KBO Open Data)."
         )
 
         postal = load_postal_analytics()
-        nace = query_df(
-            "SELECT code_nace, libelle, total_entreprises FROM analytics_by_nace ORDER BY total_entreprises DESC LIMIT 20"
-        )
+        nace = load_nace_analytics()
         ratio = query_df(
             "SELECT date, taux_ouvertes, taux_fermees FROM analytics_open_closed_ratio ORDER BY computed_at DESC LIMIT 5"
         )
-        temporal = query_df(
-            "SELECT mois, nouvelles_entreprises, fermees_mois FROM analytics_temporal ORDER BY mois"
-        )
+        temporal = load_temporal_analytics()
 
         if postal.empty and nace.empty:
             st.warning(
@@ -827,9 +1450,19 @@ def render_analytics() -> None:
             )
             return
 
+        financial = query_df(
+            """
+            SELECT r.rang, r.bce_number, c.name, r.total_actif, r.computed_at
+            FROM analytics_financial_ranking r
+            LEFT JOIN companies c ON c.id = r.company_id
+            ORDER BY r.rang ASC NULLS LAST
+            LIMIT 25
+            """
+        )
+
         view = st.radio(
             "Vue",
-            ["Codes postaux", "Secteurs NACE", "Évolution temporelle"],
+            ["Codes postaux", "Secteurs NACE", "Évolution temporelle", "Classement financier"],
             horizontal=True,
             label_visibility="collapsed",
         )
@@ -846,7 +1479,7 @@ def render_analytics() -> None:
                     x="code_postal",
                     y="total",
                     color="actives",
-                    color_continuous_scale=["#1e3a5f", COLORS["blue"], COLORS["cyan"]],
+                    color_continuous_scale=[COLORS["heatmap_start"], COLORS["blue"], COLORS["cyan"]],
                     labels={
                         "code_postal": "Code postal",
                         "total": "Entreprises",
@@ -901,33 +1534,97 @@ def render_analytics() -> None:
                                 ],
                             )
 
-        elif view == "Secteurs NACE" and not nace.empty:
-            fig = px.bar(
-                nace.head(15),
-                x="total_entreprises",
-                y="code_nace",
-                orientation="h",
-                color="total_entreprises",
-                color_continuous_scale=["#1e3a5f", COLORS["purple"]],
-                labels={"total_entreprises": "Entreprises", "code_nace": "NACE"},
-            )
-            fig.update_layout(showlegend=False, coloraxis_showscale=False)
-            st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
-            with st.expander("Détail secteurs"):
-                st.dataframe(nace, hide_index=True, use_container_width=True)
+        elif view == "Secteurs NACE":
+            nace_known = nace[
+                ~nace["code_nace"].isin(["unknown", "Non renseigné", ""])
+            ].copy()
+            if nace_known.empty:
+                st.info(
+                    "Aucun code NACE renseigné. Cliquez sur **Sync secteurs NACE (KBO)** "
+                    "(après `dag_t_kbo_import_data`) puis relancez `dag_pipeline_analytics`."
+                )
+            else:
+                chart_df = nace_known.head(15).copy()
+                chart_df["secteur"] = chart_df.apply(
+                    lambda r: (
+                        f"{r['code_nace']} — {str(r['libelle'])[:48]}"
+                        if r["libelle"] and r["libelle"] != r["code_nace"]
+                        else str(r["code_nace"])
+                    ),
+                    axis=1,
+                )
+                fig = px.bar(
+                    chart_df,
+                    x="total_entreprises",
+                    y="secteur",
+                    orientation="h",
+                    color="code_nace",
+                    color_discrete_sequence=CHART_PALETTE,
+                    labels={"total_entreprises": "Entreprises", "secteur": "Secteur NACE"},
+                )
+                fig.update_layout(showlegend=False)
+                st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+                with st.expander("Détail secteurs"):
+                    st.dataframe(nace, hide_index=True, use_container_width=True)
 
-        elif view == "Évolution temporelle" and not temporal.empty:
-            fig = px.bar(
-                temporal,
-                x="mois",
-                y=["nouvelles_entreprises", "fermees_mois"],
-                barmode="group",
-                color_discrete_map={
-                    "nouvelles_entreprises": COLORS["green"],
-                    "fermees_mois": COLORS["red"],
-                },
-            )
-            st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+        elif view == "Évolution temporelle":
+            if temporal.empty:
+                st.info(
+                    "Pas de dates de création KBO exploitables (≥ 2000). "
+                    "Importez les données KBO puis synchronisez."
+                )
+            else:
+                plot_df = temporal.copy()
+                fig = px.bar(
+                    plot_df,
+                    x="mois_dt",
+                    y=["nouvelles_entreprises", "fermees_mois"],
+                    barmode="group",
+                    labels={
+                        "mois_dt": "Mois",
+                        "nouvelles_entreprises": "Créations",
+                        "fermees_mois": "Fermées / inactives",
+                    },
+                    color_discrete_map={
+                        "nouvelles_entreprises": COLORS["green"],
+                        "fermees_mois": COLORS["red"],
+                    },
+                )
+                year_span = plot_df["mois_dt"].max().year - plot_df["mois_dt"].min().year
+                tick = "M12" if year_span > 3 else "M3"
+                fig.update_xaxes(type="date", tickformat="%Y-%m", dtick=tick)
+                fig.update_layout(bargap=0.15)
+                st.caption(
+                    f"Période affichée : **{plot_df['mois'].min()}** → **{plot_df['mois'].max()}** "
+                    "(date de création KBO des entreprises du jeu courant)."
+                )
+                st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+
+        elif view == "Classement financier":
+            if financial.empty:
+                st.info(
+                    "Aucun classement financier. Lancez `dag_pipeline_analytics` "
+                    "après extraction des données BNB (`company_financials`)."
+                )
+            else:
+                fig = px.bar(
+                    financial.head(15),
+                    x="total_actif",
+                    y="bce_number",
+                    orientation="h",
+                    color="rang",
+                    color_continuous_scale=[COLORS["purple"], COLORS["gold"]],
+                    labels={"total_actif": "Total actif", "bce_number": "BCE"},
+                    hover_data=["name", "rang"],
+                )
+                fig.update_layout(showlegend=False, yaxis={"categoryorder": "total ascending"})
+                st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+                fin_display = add_bce_public_links(financial)
+                show_linked_dataframe(
+                    fin_display,
+                    BCE_LINK_COLUMNS,
+                    column_order=["rang", "bce_number", "name", "total_actif", "computed_at", *BCE_LINK_COLUMNS],
+                )
 
         if not ratio.empty:
             with st.expander("Ratio ouvert / fermé"):
@@ -1037,14 +1734,22 @@ def render_history() -> None:
                 ].astype(str).str.contains(search, case=False, na=False)
                 hist = hist[mask]
             display = add_bce_public_links(hist.copy())
-            display["snapshot"] = display["snapshot"].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else str(x)
-            )
+            display["résumé"] = display["snapshot"].apply(format_snapshot_diff)
             show_linked_dataframe(
                 display,
                 BCE_LINK_COLUMNS,
-                column_order=["changed_at", "bce_number", "name", *BCE_LINK_COLUMNS, "snapshot"],
+                column_order=["changed_at", "bce_number", "name", "résumé", *BCE_LINK_COLUMNS],
             )
+            with st.expander("Snapshots JSON complets"):
+                display_json = display.copy()
+                display_json["snapshot"] = display_json["snapshot"].apply(
+                    lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else str(x)
+                )
+                st.dataframe(
+                    display_json[["changed_at", "bce_number", "snapshot"]],
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
         st.subheader("🌐 Derniers scrapes")
         st.caption("Vue détaillée avec références HDFS / MongoDB : onglet **Métadonnées**.")
@@ -1255,6 +1960,129 @@ def render_errors() -> None:
             )
 
 
+def render_performance() -> None:
+    """Benchmark des requêtes SELECT utilisées par le dashboard."""
+    with st.container(border=True):
+        st.subheader("⚡ Performance des requêtes SELECT")
+        st.caption(
+            "Mesure le temps d'exécution des requêtes PostgreSQL représentatives de chaque onglet. "
+            "Seuils : rapide < 100 ms · moyen < 500 ms · lent ≥ 500 ms."
+        )
+
+        col_btn, col_info = st.columns([1, 3])
+        with col_btn:
+            run_bench = st.button("▶️ Lancer le benchmark", use_container_width=True, key="perf_run_btn")
+        with col_info:
+            last_run = st.session_state.get("perf_last_run")
+            if last_run:
+                st.caption(f"Dernière mesure : **{last_run}**")
+
+        if run_bench or "perf_report" not in st.session_state:
+            with st.spinner("Exécution des requêtes SELECT…"):
+                report = run_performance_benchmarks()
+            st.session_state["perf_report"] = report
+            st.session_state["perf_last_run"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        report = st.session_state.get("perf_report")
+        if report is None or report.empty:
+            st.info("Cliquez sur **Lancer le benchmark** pour mesurer les performances.")
+            return
+
+        ok_mask = report["statut"] != "erreur"
+        total_ms = float(report.loc[ok_mask, "durée_ms"].sum()) if ok_mask.any() else 0.0
+        avg_ms = float(report.loc[ok_mask, "durée_ms"].mean()) if ok_mask.any() else 0.0
+        nb_ok = int(ok_mask.sum())
+        nb_err = int((~ok_mask).sum())
+        slowest = report.loc[ok_mask].sort_values("durée_ms", ascending=False).head(1) if ok_mask.any() else pd.DataFrame()
+
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Requêtes OK", f"{nb_ok} / {len(report)}")
+        m2.metric("Erreurs", nb_err)
+        m3.metric("Temps total", f"{total_ms:,.0f} ms")
+        m4.metric("Temps moyen", f"{avg_ms:,.1f} ms")
+        if not slowest.empty:
+            m5.metric(
+                "Plus lente",
+                f"{slowest['durée_ms'].iloc[0]:,.0f} ms",
+                help=str(slowest["requête"].iloc[0]),
+            )
+
+        cat_filter = st.multiselect(
+            "Filtrer par section",
+            sorted(report["category"].unique()),
+            default=sorted(report["category"].unique()),
+            key="perf_cat_filter",
+        )
+        filtered = report[report["category"].isin(cat_filter)].copy()
+        if filtered.empty:
+            st.warning("Aucune requête pour les sections sélectionnées.")
+            return
+
+        chart_df = filtered.sort_values("durée_ms", ascending=True)
+        color_map = {
+            "rapide": COLORS["green"],
+            "moyen": COLORS["gold"],
+            "lent": COLORS["red"],
+            "erreur": COLORS["purple"],
+        }
+        fig = px.bar(
+            chart_df,
+            x="durée_ms",
+            y="requête",
+            orientation="h",
+            color="statut",
+            color_discrete_map=color_map,
+            labels={"durée_ms": "Durée (ms)", "requête": "Requête", "statut": "Statut"},
+            category_orders={"statut": ["rapide", "moyen", "lent", "erreur"]},
+        )
+        fig.update_layout(
+            height=max(400, len(chart_df) * 28),
+            yaxis=dict(categoryorder="total ascending"),
+            legend_title_text="Statut",
+        )
+        st.plotly_chart(style_figure(fig), use_container_width=True, config={"displayModeBar": False})
+
+        by_cat = (
+            filtered.groupby("category", as_index=False)
+            .agg(durée_totale_ms=("durée_ms", "sum"), durée_moyenne_ms=("durée_ms", "mean"), nb_requêtes=("id", "count"))
+            .sort_values("durée_totale_ms", ascending=False)
+        )
+        by_cat["durée_totale_ms"] = by_cat["durée_totale_ms"].round(1)
+        by_cat["durée_moyenne_ms"] = by_cat["durée_moyenne_ms"].round(1)
+
+        col_tbl, col_cat = st.columns(2)
+        with col_cat:
+            st.markdown("**Synthèse par section**")
+            st.dataframe(by_cat, hide_index=True, use_container_width=True)
+        with col_tbl:
+            st.markdown("**Détail par requête**")
+            display = filtered.sort_values("durée_ms", ascending=False)[
+                ["category", "requête", "durée_ms", "lignes", "statut", "erreur"]
+            ].rename(
+                columns={
+                    "category": "Section",
+                    "requête": "Requête",
+                    "durée_ms": "Durée (ms)",
+                    "lignes": "Lignes",
+                    "statut": "Statut",
+                    "erreur": "Erreur",
+                }
+            )
+            st.dataframe(display, hide_index=True, use_container_width=True)
+
+        if nb_err:
+            st.error("Certaines requêtes ont échoué — vérifiez les messages d'erreur dans le tableau.")
+
+        bench_by_id = {b["id"]: b for b in PERFORMANCE_BENCHMARKS}
+        with st.expander("SQL des requêtes mesurées"):
+            for _, row in filtered.sort_values(["category", "requête"]).iterrows():
+                bench = bench_by_id.get(row["id"])
+                if not bench:
+                    continue
+                st.markdown(f"**{row['category']} — {row['requête']}** (`{row['durée_ms']:.1f} ms`)")
+                st.code(bench["sql"].strip(), language="sql")
+
+
 # --- Layout principal ---
 inject_styles()
 
@@ -1282,7 +2110,7 @@ except Exception as exc:
     st.error(f"Connexion base de données impossible : {exc}")
     st.stop()
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(
     [
         "📊 Aperçu",
         "🏢 Entreprises",
@@ -1291,6 +2119,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
         "📎 Métadonnées",
         "📜 Historique",
         "🚨 Erreurs",
+        "⚡ Performance",
     ]
 )
 
@@ -1317,6 +2146,9 @@ with tab6:
 
 with tab7:
     render_errors()
+
+with tab8:
+    render_performance()
 
 with st.sidebar:
     st.subheader("⚙️ Pipelines Airflow")

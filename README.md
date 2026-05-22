@@ -329,6 +329,8 @@ Scripts SQL dans `db/kbo_opendata/` :
 | `SCRAPE_FALLBACK_IF_ALL_FRESH` | true | Si 0 stale, re-scraper un lot (`SCRAPE_FALLBACK_LIMIT`) |
 | `SCRAPE_FALLBACK_LIMIT` | 100 | Taille du lot de repli |
 | `SCRAPE_STALE_DAYS` | 14 | Âge max avant re-scrape |
+| `SOURCES_REQUIRE_STORAGE` | kbo,moniteur,bnb | Sources : 0 page sur HDFS = échec du DAG scrape |
+| `SCRAPE_DIRECT_SOURCES` | moniteur,bnb | Connexion directe avant proxies (recommandé pour BNB SPA) |
 | `SCRAPE_MONITEUR_BCE_LIMIT` | 200 | Max BCE Moniteur par run (`0` = illimité) |
 | `MONITEUR_MAX_PAGES` | 100 | Pages max par entreprise (Moniteur) |
 | `TRIGGER_MONITEUR_TIMEOUT_HOURS` | 16 | Timeout `trigger_moniteur` (pipeline) |
@@ -374,6 +376,7 @@ Après modification de `requirements.txt` : `docker compose build` puis redémar
 - Jamais de suppression d'entreprise (`is_deleted=False`, archivage via `is_archived`)
 - Pages d'erreur jamais stockées sur HDFS
 - HTML sur HDFS ; métadonnées JSON dans MongoDB ; index dans PostgreSQL (`mongo_id`, `hdfs_path`)
+- Les 3 sources (`kbo`, `moniteur`, `bnb`) sont stockées sous `/data/companies/{bce}/{source}/` ; BNB accepte la coquille Angular Consult
 - Rescraping automatique si `last_scraped` > 14 jours
 - Découverte dynamique : `discovery_queue` → `scrape_queue` → scraping
 - Sync quotidienne des statuts depuis `kbo_enterprise` (AC/ST/AF)

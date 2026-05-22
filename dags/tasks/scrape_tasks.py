@@ -18,12 +18,47 @@ from common import (
     load_bce_from_csv,
     seed_companies_from_csv,
 )
+from scraper.benchmark import (
+    ScrapeBenchmark,
+    format_pipeline_summary,
+    merge_pipeline_benchmarks,
+)
 
 logger = logging.getLogger(__name__)
 
 SCRAPE_STALE_VAR = "pipeline_scrape_stale_bces"
-# Sources dont l'échec total bloque le pipeline (Moniteur/BNB : SPA externes instables)
-SOURCES_REQUIRE_STORAGE = frozenset({"kbo"})
+SCRAPE_BENCHMARK_VAR = "pipeline_scrape_benchmarks"
+
+
+def _load_pipeline_benchmarks() -> dict:
+    raw = Variable.get(SCRAPE_BENCHMARK_VAR, default_var="{}")
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        logger.warning("Variable %s invalide, réinitialisation", SCRAPE_BENCHMARK_VAR)
+        return {}
+
+
+def _save_pipeline_benchmarks(data: dict) -> None:
+    Variable.set(SCRAPE_BENCHMARK_VAR, json.dumps(data, ensure_ascii=False))
+
+
+def _append_source_benchmark(summary: dict[str, Any]) -> None:
+    data = _load_pipeline_benchmarks()
+    sources = data.get("sources")
+    if not isinstance(sources, list):
+        sources = []
+    sources = [s for s in sources if s.get("source") != summary.get("source")]
+    sources.append(summary)
+    data["sources"] = sources
+    _save_pipeline_benchmarks(data)
+
+
+def _sources_require_storage() -> frozenset[str]:
+    """Sources pour lesquelles 0 page stockée sur HDFS fait échouer le DAG scrape."""
+    raw = os.getenv("SOURCES_REQUIRE_STORAGE", "kbo,moniteur,bnb")
+    return frozenset(s.strip().lower() for s in raw.split(",") if s.strip())
 
 
 def _store_scrape_results(results: list[dict]) -> int:
@@ -125,6 +160,11 @@ def scrape_prepare_batch(**_context):
         )
 
     Variable.set(SCRAPE_STALE_VAR, json.dumps(stale))
+    _save_pipeline_benchmarks({
+        "pipeline_started_at": datetime.now(timezone.utc).isoformat(),
+        "bce_count": len(stale),
+        "sources": [],
+    })
     logger.info("BCE à traiter: %d", len(stale))
     if not stale:
         logger.warning("Aucun BCE disponible (CSV/SQL/queue vides)")
@@ -170,6 +210,8 @@ def _run_scrape_source(source: str, **context: Any):
         }
     stale = _limit_bce_batch(stale, source)
     scraper = get_scraper()
+    benchmark = ScrapeBenchmark(source=source, companies_target=len(stale))
+    task_started = time.monotonic()
     heartbeat_every = float(os.getenv("SCRAPE_HEARTBEAT_SEC", "30"))
     last_hb = time.monotonic()
 
@@ -180,16 +222,24 @@ def _run_scrape_source(source: str, **context: Any):
             last_hb = time.monotonic()
 
     airflow_heartbeat(context)
-    results = scraper.scrape_batch(stale, source=source, on_progress=on_progress)
+    results = scraper.scrape_batch(
+        stale,
+        source=source,
+        on_progress=on_progress,
+        benchmark=benchmark,
+    )
     airflow_heartbeat(context)
+    storage_started = time.monotonic()
     stored = _store_scrape_results(results)
+    benchmark.storage_duration_sec = time.monotonic() - storage_started
+    benchmark.finish()
     invalid = sum(1 for r in results if r.get("valid") is False)
     if stored == 0 and results:
         msg = (
             f"Scraping {source}: {len(results)} pages, {invalid} invalides, "
             f"aucune stockée (vérifier validateur, proxies ou portail source)"
         )
-        if source in SOURCES_REQUIRE_STORAGE:
+        if source in _sources_require_storage():
             raise RuntimeError(msg)
         logger.warning("%s — le pipeline scraping continue", msg)
     companies = len({r.get("bce_number") for r in results if r.get("bce_number")})
@@ -201,6 +251,10 @@ def _run_scrape_source(source: str, **context: Any):
             len(results),
             companies,
         )
+    bench_summary = benchmark.to_dict(stored=stored)
+    bench_summary["task_duration_sec"] = round(time.monotonic() - task_started, 3)
+    _append_source_benchmark(bench_summary)
+    logger.info(benchmark.format_summary(stored=stored))
     logger.info(
         "Scraping %s: %d entreprises, %d pages HTML, %d stockées",
         source,
@@ -214,6 +268,7 @@ def _run_scrape_source(source: str, **context: Any):
         "stored": stored,
         "invalid": invalid,
         "companies": companies,
+        "benchmark": bench_summary,
     }
 
 
@@ -244,10 +299,21 @@ def scrape_advance_batch_offset(**_context):
         )
         return {"advanced": 0, "offset": get_kbo_batch_offset()}
 
+    bench_data = _load_pipeline_benchmarks()
+    per_source = bench_data.get("sources") or []
+    pipeline_summary = merge_pipeline_benchmarks(per_source)
+    pipeline_summary["pipeline_started_at"] = bench_data.get("pipeline_started_at")
+    pipeline_summary["bce_count"] = bench_data.get("bce_count", len(stale))
+    logger.info(format_pipeline_summary(pipeline_summary))
+
     new_offset = advance_kbo_batch_offset(len(stale))
     logger.info(
         "Lot de %d BCE terminé — prochain run à partir de l'offset %d",
         len(stale),
         new_offset,
     )
-    return {"advanced": len(stale), "offset": new_offset}
+    return {
+        "advanced": len(stale),
+        "offset": new_offset,
+        "benchmark_pipeline": pipeline_summary,
+    }

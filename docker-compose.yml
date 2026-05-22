@@ -69,6 +69,8 @@ x-airflow-common: &airflow-common
     SCRAPE_FALLBACK_IF_ALL_FRESH: ${SCRAPE_FALLBACK_IF_ALL_FRESH:-true}
     SCRAPE_FALLBACK_LIMIT: ${SCRAPE_FALLBACK_LIMIT:-100}
     SCRAPE_STALE_DAYS: ${SCRAPE_STALE_DAYS:-14}
+    SOURCES_REQUIRE_STORAGE: ${SOURCES_REQUIRE_STORAGE:-kbo,moniteur,bnb}
+    SCRAPE_DIRECT_SOURCES: ${SCRAPE_DIRECT_SOURCES:-moniteur,bnb}
     PYTHONPATH: /opt/airflow:/opt/airflow/project:/opt/airflow/dags
   volumes:
     - ./dags:/opt/airflow/dags

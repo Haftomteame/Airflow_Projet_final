@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 
 import requests
 
+from scraper.benchmark import ScrapeBenchmark
 from scraper.pagination import (
     compute_moniteur_last_page,
     extract_max_page_from_html,
@@ -38,6 +39,13 @@ PROXY_BLACKLIST_ON_RATE_LIMIT = os.getenv("PROXY_BLACKLIST_ON_RATE_LIMIT", "fals
     "1",
     "true",
     "yes",
+)
+
+# KBO : Tor/proxies. Moniteur/BNB : connexion directe d'abord (proxies/Tor cassent souvent le HTML).
+DIRECT_FIRST_SOURCES: frozenset[str] = frozenset(
+    s.strip().lower()
+    for s in os.getenv("SCRAPE_DIRECT_SOURCES", "moniteur,bnb").split(",")
+    if s.strip()
 )
 
 
@@ -142,6 +150,35 @@ def scrape_page_with_rotation(
     return None, last_status, total_attempts, proxy_used
 
 
+def scrape_page_direct_first(
+    url: str,
+    proxy_manager: ProxyManager,
+) -> tuple[str | None, int, int, str]:
+    """Tente d'abord sans proxy (Moniteur/BNB), puis rotation si échec."""
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "fr-BE,fr;q=0.9,nl;q=0.8,en;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        resp = requests.get(
+            url,
+            headers=headers,
+            timeout=DEFAULT_TIMEOUT,
+            allow_redirects=True,
+        )
+        if resp.status_code == 200 and resp.text:
+            logger.info("Scrape OK %s via direct (tentative initiale)", url)
+            return resp.text, resp.status_code, 1, "direct"
+        if resp.status_code == 500 and resp.text and len(resp.text.strip()) > 500:
+            logger.warning("HTTP 500 avec corps HTML pour %s via direct", url)
+            return resp.text, resp.status_code, 1, "direct"
+    except requests.RequestException as exc:
+        logger.warning("Échec direct pour %s: %s — repli proxies", url, exc)
+
+    return scrape_page_with_rotation(url, proxy_manager, allow_direct=True)
+
+
 # Alias rétrocompatibilité (tests / imports existants)
 def scrape_page(
     url: str,
@@ -189,10 +226,16 @@ class BelgianScraper:
         self.bnb_base = os.getenv("BNB_BASE_URL", "https://consult.cbso.nbb.be/")
 
     def _scrape_with_proxy(self, url: str, source: str) -> dict[str, Any]:
-        html, status_code, attempts, proxy_label = scrape_page_with_rotation(
-            url,
-            self.proxy_manager,
-        )
+        if source in DIRECT_FIRST_SOURCES:
+            html, status_code, attempts, proxy_label = scrape_page_direct_first(
+                url,
+                self.proxy_manager,
+            )
+        else:
+            html, status_code, attempts, proxy_label = scrape_page_with_rotation(
+                url,
+                self.proxy_manager,
+            )
 
         if not html:
             return {
@@ -397,18 +440,28 @@ class BelgianScraper:
         source: str,
         *,
         on_progress: Callable[[int, int, str], None] | None = None,
+        benchmark: ScrapeBenchmark | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
         total = len(bce_numbers)
+        bench = benchmark or ScrapeBenchmark(source=source, companies_target=total)
+
         for index, bce in enumerate(bce_numbers):
             if on_progress:
                 on_progress(index, total, bce)
+            t0 = time.monotonic()
             if source == "kbo":
-                results.extend(self.scrape_kbo(bce))
+                company_results = self.scrape_kbo(bce)
             elif source == "moniteur":
-                results.extend(self.scrape_moniteur(bce))
+                company_results = self.scrape_moniteur(bce)
             elif source == "bnb":
-                results.extend(self.scrape_bnb(bce))
+                company_results = self.scrape_bnb(bce)
             else:
                 raise ValueError(f"Source inconnue: {source}")
+            bench.record_company(company_results, time.monotonic() - t0)
+            results.extend(company_results)
+
+        bench.finish()
+        if benchmark is None:
+            logger.info(bench.format_summary())
         return results

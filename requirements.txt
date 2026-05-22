@@ -1,0 +1,11 @@
+# Dépendances projet (Airflow 3 est fourni par l'image Docker)
+apache-airflow-providers-postgres>=6.0.0
+psycopg2-binary==2.9.9
+beautifulsoup4==4.12.3
+requests==2.31.0
+PySocks==1.7.1
+lxml==5.2.1
+hdfs==2.7.3
+pymongo==4.7.3
+pandas==2.2.1
+python-dotenv==1.0.1

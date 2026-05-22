@@ -1,0 +1,354 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: belgian-companies-airflow:3.0.5
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-belgian_companies_api_secret_dev}
+    # Obligatoire en Airflow 3 + Celery : même secret sur apiserver, scheduler, worker
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-belgian_companies_jwt_secret_dev_key_32chars}
+    # Pipelines longs (wait_for_completion) : évite "Signature has expired"
+    AIRFLOW__API_AUTH__JWT_EXPIRATION_TIME: ${AIRFLOW_JWT_EXPIRATION:-14400}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-46BKJoQYlN9cN2F44sOp6bAFGzhSokcTyHWUA5KpyEc=}
+    # false = les DAGs s'exécutent automatiquement selon leur schedule
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'false'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Tâches longues (import KBO, triggers pipeline) : éviter "state mismatch" / heartbeat timeout
+    AIRFLOW__SCHEDULER__TASK_INSTANCE_HEARTBEAT_SEC: ${AIRFLOW_TASK_HEARTBEAT_SEC:-30}
+    AIRFLOW__SCHEDULER__TASK_INSTANCE_HEARTBEAT_TIMEOUT: ${AIRFLOW_TASK_HEARTBEAT_TIMEOUT:-14400}
+    AIRFLOW__CELERY__TASK_PUBLISH_MAX_RETRIES: '10'
+    APP_DB_URL: postgresql://airflow:airflow@postgres/belgian_companies
+    HDFS_URL: http://namenode:9870
+    HDFS_USER: hdfs
+    MONGODB_URI: mongodb://airflow:airflow@mongodb:27017/?authSource=admin
+    MONGODB_DB: belgian_companies
+    MONGODB_METADATA_COLLECTION: scrape_metadata
+    PROXY_LIST: ${PROXY_LIST:-}
+    PROXY_LIST_URL: ${PROXY_LIST_URL:-}
+    PROXY_AUTO_FETCH: ${PROXY_AUTO_FETCH:-false}
+    PROXY_FETCH_PROTOCOLS: ${PROXY_FETCH_PROTOCOLS:-http,socks5,socks4}
+    PROXY_FETCH_TIMEOUT_MS: ${PROXY_FETCH_TIMEOUT_MS:-5000}
+    PROXY_VALIDATE: ${PROXY_VALIDATE:-true}
+    PROXY_VALIDATE_URLS: ${PROXY_VALIDATE_URLS:-http://httpbin.org/ip,http://www.google.com/generate_204,https://httpbin.org/get}
+    PROXY_VALIDATE_TIMEOUT: ${PROXY_VALIDATE_TIMEOUT:-10}
+    PROXY_VALIDATE_MAX: ${PROXY_VALIDATE_MAX:-0}
+    PROXY_VALIDATE_WORKERS: ${PROXY_VALIDATE_WORKERS:-60}
+    PROXY_LIST_FILE: ${PROXY_LIST_FILE:-}
+    PROXY_USE_CACHE_FILE: ${PROXY_USE_CACHE_FILE:-true}
+    PROXY_CACHE_IGNORE_TTL: ${PROXY_CACHE_IGNORE_TTL:-true}
+    PROXY_CACHE_FILE: ${PROXY_CACHE_FILE:-/opt/airflow/data/proxies_active.txt}
+    PROXY_CACHE_TTL_HOURS: ${PROXY_CACHE_TTL_HOURS:-24}
+    PROXY_USE_TOR: ${PROXY_USE_TOR:-true}
+    TOR_PROXIES: ${TOR_PROXIES:-socks5h://tor1:9050,socks5h://tor2:9050,socks5h://tor3:9050}
+    PROXY_HTTPS_HTTP_ONLY: ${PROXY_HTTPS_HTTP_ONLY:-false}
+    PROXY_BLACKLIST_ON_RATE_LIMIT: ${PROXY_BLACKLIST_ON_RATE_LIMIT:-false}
+    PROXY_MAX_ROTATIONS: ${PROXY_MAX_ROTATIONS:-50}
+    PROXY_RETRY_DELAY: ${PROXY_RETRY_DELAY:-0.5}
+    KBO_BASE_URL: ${KBO_BASE_URL:-https://kbopub.economie.fgov.be/kbopub/toonondernemingps.html}
+    MONITEUR_BASE_URL: ${MONITEUR_BASE_URL:-https://www.ejustice.just.fgov.be/cgi_tsv/list.pl}
+    BNB_BASE_URL: ${BNB_BASE_URL:-https://consult.cbso.nbb.be/}
+    KBO_DATA_PATH: /kbo_data
+    KBO_SQL_DIR: /opt/airflow/project/db/kbo_opendata
+    KBO_IMPORT_LIMIT: ${KBO_IMPORT_LIMIT:-500}
+    KBO_SCRAPE_QUEUE_LIMIT: ${KBO_SCRAPE_QUEUE_LIMIT:-500}
+    PYTHONPATH: /opt/airflow:/opt/airflow/project:/opt/airflow/dags
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./scraper:/opt/airflow/project/scraper
+    - ./extractor:/opt/airflow/project/extractor
+    - ./db:/opt/airflow/project/db
+    - ./analytics:/opt/airflow/project/analytics
+    - ./data:/opt/airflow/data
+    - ./logs:/opt/airflow/logs
+    - ./config:/opt/airflow/config
+    - ../KboOpenData_0335_2026_04_19_Full:/kbo_data:ro
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    mongodb:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/02-init-app.sql
+      - ./db/kbo_opendata/01_schema.sql:/docker-entrypoint-initdb.d/03-kbo-schema.sql
+      - ../KboOpenData_0335_2026_04_19_Full:/kbo_data:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  redis:
+    image: redis:7.2-bookworm
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  mongodb:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: airflow
+      MONGO_INITDB_ROOT_PASSWORD: airflow
+    ports:
+      - "${MONGODB_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Proxies SOCKS Tor pour dag_kbo_tor_proxy (spam_kbo_tor_taskflow)
+  tor1:
+    image: dperson/torproxy
+    restart: unless-stopped
+
+  tor2:
+    image: dperson/torproxy
+    restart: unless-stopped
+
+  tor3:
+    image: dperson/torproxy
+    restart: unless-stopped
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    environment:
+      - CLUSTER_NAME=belgian-companies
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    ports:
+      # Ports hôte configurables (9870/9000 souvent déjà pris par un ancien namenode)
+      - "${HDFS_WEB_HOST_PORT:-19870}:9870"
+      - "${HDFS_RPC_HOST_PORT:-19000}:9000"
+    volumes:
+      - hadoop-namenode:/hadoop/dfs/name
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    environment:
+      - SERVICE_PRECONDITION=namenode:9870
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    volumes:
+      - hadoop-datanode:/hadoop/dfs/data
+    depends_on:
+      - namenode
+
+  hdfs-init:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        hdfs dfs -mkdir -p /data/companies || true
+        hdfs dfs -chmod -R 777 /data || true
+        echo HDFS init OK
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    depends_on:
+      namenode:
+        condition: service_healthy
+    restart: "no"
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        mkdir -p /opt/airflow/{logs,dags,plugins,config}
+        airflow db migrate
+        airflow users create \
+          --username "${_AIRFLOW_WWW_USER_USERNAME:-admin}" \
+          --password "${_AIRFLOW_WWW_USER_PASSWORD:-admin}" \
+          --firstname Admin --lastname User --role Admin \
+          --email admin@example.com || true
+        # Anciens DAG monolithiques (supprimés du code) — pause + retrait metadata
+        for dag in dag_kbo_import dag_scraping dag_extraction dag_lifecycle dag_analytics dag_monitoring; do
+          airflow dags pause "$$dag" 2>/dev/null || true
+          airflow dags delete "$$dag" --yes 2>/dev/null || true
+        done
+        # Pipelines orchestrateurs (séquence fail-fast)
+        for dag in dag_pipeline_kbo dag_pipeline_scraping dag_pipeline_extraction \
+                   dag_pipeline_lifecycle dag_pipeline_analytics dag_pipeline_monitoring; do
+          airflow dags unpause "$$dag" 2>/dev/null || true
+        done
+        # DAGs tâches unitaires (déclenchés par les pipelines)
+        for dag in dag_t_kbo_import_data dag_t_kbo_seed_companies dag_t_kbo_create_views dag_t_kbo_sync_queue \
+                   dag_t_scrape_prepare dag_t_scrape_kbo dag_t_scrape_moniteur dag_t_scrape_bnb \
+                   dag_t_extract_list_files dag_t_extract_parse_kbo dag_t_extract_parse_moniteur dag_t_extract_parse_bnb \
+                   dag_t_lifecycle_sync_kbo dag_t_lifecycle_find_stale dag_t_lifecycle_find_inactive \
+                   dag_t_lifecycle_rescrape dag_t_lifecycle_archive dag_t_lifecycle_process_discoveries \
+                   dag_t_analytics_clear dag_t_analytics_postal dag_t_analytics_nace dag_t_analytics_financial \
+                   dag_t_analytics_ratio dag_t_analytics_temporal dag_t_monitoring_snapshot; do
+          airflow dags unpause "$$dag" 2>/dev/null || true
+        done
+        chown -R "$${AIRFLOW_UID:-50000}:0" /opt/airflow/logs /opt/airflow/dags 2>/dev/null || true
+        # Répertoire HDFS pour les HTML scrapés (évite Permission denied)
+        curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data?op=MKDIRS&user.name=root" 2>/dev/null || true
+        curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data/companies?op=MKDIRS&user.name=root" 2>/dev/null || true
+        curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data?op=SETPERMISSION&permission=777&user.name=root" 2>/dev/null || true
+        curl -sf -X PUT "http://namenode:9870/webhdfs/v1/data/companies?op=SETPERMISSION&permission=777&user.name=root" 2>/dev/null || true
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_WWW_USER_USERNAME:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_WWW_USER_PASSWORD:-admin}
+    user: "0:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      hdfs-init:
+        condition: service_completed_successfully
+
+  # Airflow 3 : API server remplace le webserver (UI sur :8080)
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    environment:
+      <<: *airflow-env
+      DUMB_INIT_SETSID: "0"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      tor1:
+        condition: service_started
+      tor2:
+        condition: service_started
+      tor3:
+        condition: service_started
+      airflow-apiserver:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      hdfs-init:
+        condition: service_completed_successfully
+
+  streamlit-dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    environment:
+      APP_DB_URL: postgresql://airflow:airflow@postgres/belgian_companies
+      AIRFLOW_UI_URL: ${AIRFLOW_UI_URL:-http://localhost:8080}
+      HDFS_UI_URL: ${HDFS_UI_URL:-http://localhost:19870}
+      KBO_BASE_URL: ${KBO_BASE_URL:-https://kbopub.economie.fgov.be/kbopub/toonondernemingps.html}
+      MONITEUR_BASE_URL: ${MONITEUR_BASE_URL:-https://www.ejustice.just.fgov.be/cgi_tsv/list.pl}
+      BNB_BASE_URL: ${BNB_BASE_URL:-https://consult.cbso.nbb.be/}
+      KBO_DATA_PATH: ${KBO_DATA_PATH:-/kbo_data}
+      PYTHONPATH: /app
+      REFRESH_SECONDS: ${DASHBOARD_REFRESH_SECONDS:-30}
+    volumes:
+      - ./dashboard/app.py:/app/app.py:ro
+      - ./db:/app/db:ro
+      - ../KboOpenData_0335_2026_04_19_Full:/kbo_data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: always
+
+volumes:
+  postgres-data:
+  mongodb-data:
+  hadoop-namenode:
+  hadoop-datanode:

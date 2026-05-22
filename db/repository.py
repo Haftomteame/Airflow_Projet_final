@@ -107,6 +107,7 @@ class Repository:
                     or_(Company.last_scraped.is_(None), Company.last_scraped < cutoff),
                     Company.bce_number.in_(bce_list),
                     Company.is_deleted.is_(False),
+                    Company.is_archived.is_(False),
                 ).all()
             }
         return [b for b in bce_list if b in stale]
@@ -144,6 +145,9 @@ class Repository:
 
     def enqueue_scrape(self, bce_number: str, reason: str = "rescrape", priority: int = 1) -> None:
         with self.session() as s:
+            company = s.query(Company).filter_by(bce_number=bce_number).first()
+            if company and (company.is_archived or company.is_deleted):
+                return
             exists = (
                 s.query(ScrapeQueue)
                 .filter_by(bce_number=bce_number, processed=False)
@@ -163,8 +167,13 @@ class Repository:
             if limit > 0:
                 q = q.limit(limit)
             rows = q.all()
-            bces = [r.bce_number for r in rows]
+            bces: list[str] = []
             for r in rows:
+                company = s.query(Company).filter_by(bce_number=r.bce_number).first()
+                if company and (company.is_archived or company.is_deleted):
+                    r.processed = True
+                    continue
+                bces.append(r.bce_number)
                 r.processed = True
             s.commit()
             return bces
@@ -267,34 +276,43 @@ class Repository:
             return count
 
     def sync_company_status_from_kbo(self) -> int:
-        """Aligne companies.status sur kbo_enterprise (AC/ST/AF)."""
-        from sqlalchemy import text
-
+        """Aligne companies.status sur kbo_enterprise (AC/ST/AF) avec historique."""
         sql = text("""
-            UPDATE companies c
-            SET status = CASE k.status
-                WHEN 'AC' THEN 'active'
-                WHEN 'ST' THEN 'inactive'
-                WHEN 'AF' THEN 'closed'
-                ELSE c.status
-            END
-            FROM kbo_enterprise k
-            WHERE REPLACE(k.enterprise_number, '.', '') = c.bce_number
-              AND c.is_deleted = FALSE
+            SELECT c.id,
+                   CASE k.status
+                       WHEN 'AC' THEN 'active'
+                       WHEN 'ST' THEN 'inactive'
+                       WHEN 'AF' THEN 'closed'
+                       ELSE c.status
+                   END AS new_status
+            FROM companies c
+            JOIN kbo_enterprise k
+              ON REPLACE(k.enterprise_number, '.', '') = c.bce_number
+            WHERE c.is_deleted = FALSE
               AND c.is_archived = FALSE
-              AND (
-                c.status IS DISTINCT FROM CASE k.status
-                    WHEN 'AC' THEN 'active'
-                    WHEN 'ST' THEN 'inactive'
-                    WHEN 'AF' THEN 'closed'
-                    ELSE c.status
-                END
-              )
+              AND c.status IS DISTINCT FROM CASE k.status
+                  WHEN 'AC' THEN 'active'
+                  WHEN 'ST' THEN 'inactive'
+                  WHEN 'AF' THEN 'closed'
+                  ELSE c.status
+              END
         """)
         try:
-            with self.engine.begin() as conn:
-                result = conn.execute(sql)
-                return result.rowcount or 0
+            with self.session() as s:
+                rows = s.execute(sql).fetchall()
+                updated = 0
+                for row in rows:
+                    company = s.get(Company, row.id)
+                    if not company:
+                        continue
+                    old_snapshot = self._company_snapshot(company)
+                    company.status = row.new_status
+                    new_snapshot = self._company_snapshot(company)
+                    if old_snapshot != new_snapshot:
+                        self._add_history(s, company.id, new_snapshot)
+                        updated += 1
+                s.commit()
+                return updated
         except Exception as exc:
             logger.warning("Sync statuts KBO ignorée: %s", exc)
             return 0
@@ -413,6 +431,54 @@ class Repository:
                 .order_by(MonitoringSnapshot.timestamp.desc())
                 .first()
             )
+
+    def get_monitoring_timeline(self, limit: int = 48) -> list[MonitoringSnapshot]:
+        with self.session() as s:
+            return (
+                s.query(MonitoringSnapshot)
+                .order_by(MonitoringSnapshot.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+
+    def get_company_details(self, bce_number: str) -> dict[str, Any] | None:
+        with self.session() as s:
+            company = s.query(Company).filter_by(bce_number=bce_number).first()
+            if not company:
+                return None
+            directors = (
+                s.query(CompanyDirector)
+                .filter_by(company_id=company.id)
+                .order_by(CompanyDirector.name)
+                .all()
+            )
+            financials = (
+                s.query(CompanyFinancial)
+                .filter_by(company_id=company.id)
+                .order_by(CompanyFinancial.fiscal_year.desc())
+                .all()
+            )
+            publications = (
+                s.query(MoniteurPublication)
+                .filter_by(company_id=company.id)
+                .order_by(MoniteurPublication.publication_date.desc())
+                .limit(20)
+                .all()
+            )
+            history = (
+                s.query(CompanyHistory)
+                .filter_by(company_id=company.id)
+                .order_by(CompanyHistory.changed_at.desc())
+                .limit(10)
+                .all()
+            )
+            return {
+                "company": company,
+                "directors": directors,
+                "financials": financials,
+                "publications": publications,
+                "history": history,
+            }
 
     def get_recent_errors(self, limit: int = 50) -> list[ScrapeError]:
         with self.session() as s:

@@ -391,9 +391,18 @@ class BelgianScraper:
         logger.info("Scrape BNB %s", bce_number)
         return [self._scrape_single_page(bce_number, "bnb", url)]
 
-    def scrape_batch(self, bce_numbers: list[str], source: str) -> list[dict[str, Any]]:
+    def scrape_batch(
+        self,
+        bce_numbers: list[str],
+        source: str,
+        *,
+        on_progress: Callable[[int, int, str], None] | None = None,
+    ) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
-        for bce in bce_numbers:
+        total = len(bce_numbers)
+        for index, bce in enumerate(bce_numbers):
+            if on_progress:
+                on_progress(index, total, bce)
             if source == "kbo":
                 results.extend(self.scrape_kbo(bce))
             elif source == "moniteur":

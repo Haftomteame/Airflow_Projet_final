@@ -41,7 +41,11 @@ LEFT JOIN LATERAL (
     SELECT nace_code
     FROM kbo_activity act
     WHERE act.entity_number = e.enterprise_number
-      AND act.classification = 'MAIN'
+      AND UPPER(TRIM(act.classification)) = 'MAIN'
+    ORDER BY
+        CASE act.activity_group WHEN '006' THEN 0 WHEN '001' THEN 1 ELSE 2 END,
+        act.nace_version DESC NULLS LAST,
+        act.nace_code
     LIMIT 1
 ) act ON TRUE
 ON CONFLICT (bce_number) DO UPDATE SET

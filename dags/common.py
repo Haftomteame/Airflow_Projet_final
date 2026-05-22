@@ -38,8 +38,7 @@ PIPELINE_DEFAULT_ARGS = {
     "depends_on_past": False,
 }
 
-# Attente du DAG enfant (AF 3 utilise le triggerer → état « deferred » dans l'UI, normal).
-# deferrable=False : le worker Celery n'occupe pas un slot pendant l'attente.
+# Attente bloquante sur le worker Celery (deferrable=False, demandé explicitement).
 TRIGGER_WAIT_KWARGS = {
     "wait_for_completion": True,
     "poke_interval": 30,
@@ -121,36 +120,74 @@ def build_task_dag(
     return dag
 
 
-def load_bce_from_kbo_sql() -> list[str]:
-    """Lit les numéros BCE depuis les tables/vues SQL KBO Open Data."""
+def load_bce_from_kbo_sql(
+    *,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> list[str]:
+    """Lit les numéros BCE depuis SQL KBO (lot paginé ORDER BY + OFFSET)."""
+    from batch_utils import get_kbo_batch_limit, get_kbo_batch_offset
+
     repo = get_repo()
-    limit = int(os.getenv("KBO_SCRAPE_QUEUE_LIMIT", "500") or "500")
-    sql = """
-        SELECT bce_number FROM (
-            SELECT DISTINCT REPLACE(enterprise_number, '.', '') AS bce_number
-            FROM kbo_enterprise
-            WHERE status = 'AC'
-            UNION
-            SELECT bce_number FROM companies WHERE source = 'kbo_opendata'
-        ) q
-        WHERE bce_number IS NOT NULL AND bce_number <> ''
-        LIMIT :limit
-    """
+    batch_limit = get_kbo_batch_limit() if limit is None else max(0, int(limit))
+    batch_offset = get_kbo_batch_offset() if offset is None else max(0, int(offset))
+
+    if batch_limit <= 0:
+        sql = """
+            SELECT bce_number FROM (
+                SELECT DISTINCT REPLACE(enterprise_number, '.', '') AS bce_number
+                FROM kbo_enterprise
+                WHERE status = 'AC'
+                UNION
+                SELECT bce_number FROM companies WHERE source = 'kbo_opendata'
+            ) q
+            WHERE bce_number IS NOT NULL AND bce_number <> ''
+            ORDER BY bce_number
+        """
+        params: dict[str, int] = {}
+    else:
+        sql = """
+            SELECT bce_number FROM (
+                SELECT DISTINCT REPLACE(enterprise_number, '.', '') AS bce_number
+                FROM kbo_enterprise
+                WHERE status = 'AC'
+                UNION
+                SELECT bce_number FROM companies WHERE source = 'kbo_opendata'
+            ) q
+            WHERE bce_number IS NOT NULL AND bce_number <> ''
+            ORDER BY bce_number
+            OFFSET :offset LIMIT :limit
+        """
+        params = {"offset": batch_offset, "limit": batch_limit}
+
     try:
         with repo.engine.connect() as conn:
             from sqlalchemy import text
 
-            rows = conn.execute(text(sql), {"limit": limit}).fetchall()
+            rows = conn.execute(text(sql), params).fetchall()
         bces = [r[0] for r in rows]
         if bces:
-            logger.info("Chargé %d numéros BCE depuis SQL KBO", len(bces))
+            logger.info(
+                "Chargé %d numéros BCE depuis SQL KBO (offset=%d, limit=%s)",
+                len(bces),
+                batch_offset,
+                batch_limit if batch_limit > 0 else "∞",
+            )
             return bces
+        if batch_limit > 0:
+            logger.warning(
+                "Aucun BCE au offset %d (limit=%d) — fin du jeu ou curseur trop avancé",
+                batch_offset,
+                batch_limit,
+            )
     except Exception as exc:
         logger.warning("SQL KBO indisponible (%s), repli sur companies.csv", exc)
     return []
 
 
 def load_bce_from_csv() -> list[str]:
+    from batch_utils import get_kbo_batch_limit, get_kbo_batch_offset
+
     kbo_bces = load_bce_from_kbo_sql()
     if kbo_bces:
         return kbo_bces
@@ -165,7 +202,16 @@ def load_bce_from_csv() -> list[str]:
             bce = row.get("bce_number", "").strip().replace(".", "")
             if bce:
                 bces.append(bce)
-    logger.info("Chargé %d numéros BCE depuis CSV", len(bces))
+    bces.sort()
+    batch_limit = get_kbo_batch_limit()
+    batch_offset = get_kbo_batch_offset()
+    if batch_limit > 0:
+        bces = bces[batch_offset : batch_offset + batch_limit]
+    logger.info(
+        "Chargé %d numéros BCE depuis CSV (offset=%d, total fichier trié)",
+        len(bces),
+        batch_offset,
+    )
     return bces
 
 
